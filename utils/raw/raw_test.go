@@ -5,13 +5,14 @@ import (
 	"net"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
 
 func TestRaw_Write(t *testing.T) {
-	fd, err := New("ens18", syscall.ETH_P_IP, nil, net.HardwareAddr{0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE})
+	fd, err := New("eth0", syscall.ETH_P_IP, nil, net.HardwareAddr{0xfe, 0xee, 0x8f, 0xbf, 0x86, 0x99})
 	if err != nil {
 		panic(err)
 	}
@@ -25,25 +26,45 @@ func TestRaw_Write(t *testing.T) {
 
 		fmt.Printf("%+v\n", buf[:n])
 
-		//err = fd.Write(gopacket.NewPacket(buf.Bytes(), layers.LayerTypeEthernet, gopacket.NoCopy))
-		//if err != nil {
-		//	panic(err)
-		//}
+		time.Sleep(time.Second)
 
-		p := gopacket.NewPacket(buf[:n], layers.LayerTypeEthernet, gopacket.NoCopy)
-		fmt.Printf("%+v\n\n", p)
-
-		wbuf := []byte{
-			238, 238, 238, 238, 238, 238,
-			206, 155, 84, 81, 82, 81,
-			8, 0, 69, 0, 0, 60, 108, 63, 0, 0, 124, 1, 174, 43, 100, 97, 73, 214, 100, 99, 17, 188,
-			8, 0, 61, 206, 0, 1, 15, 141, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108,
-			109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 97, 98, 99, 100, 101, 102, 103, 104, 105,
+		buf := gopacket.NewSerializeBuffer()
+		eth := layers.Ethernet{
+			SrcMAC:       []byte{0x52, 0x54, 0x00, 0x0a, 0xbc, 0x94},
+			DstMAC:       []byte{0xfe, 0xee, 0x8f, 0xbf, 0x86, 0x99},
+			EthernetType: layers.EthernetTypeIPv4,
+		}
+		ipv4 := layers.IPv4{
+			Version:    4,
+			IHL:        0,
+			TOS:        22,
+			Length:     0,
+			Id:         0,
+			Flags:      0,
+			FragOffset: 0,
+			TTL:        122,
+			Protocol:   layers.IPProtocolICMPv4,
+			Checksum:   0,
+			SrcIP:      []byte{10, 0, 4, 14},
+			DstIP:      []byte{223, 5, 5, 5},
+			Options:    []layers.IPv4Option{},
+			Padding:    []byte{},
+		}
+		icmpv4 := layers.ICMPv4{
+			TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, layers.ICMPv4CodeNet),
+			Checksum: 0,
+			Id:       22,
+			Seq:      33,
+		}
+		err = gopacket.SerializeLayers(buf, gopacket.SerializeOptions{
+			FixLengths:       true,
+			ComputeChecksums: true,
+		}, &eth, &ipv4, &icmpv4)
+		if err != nil {
+			t.Fatal(err)
 		}
 
-		wbuf[len(wbuf)]
-
-		n, err = fd.Write(wbuf)
+		n, err = fd.Write(buf.Bytes())
 		if err != nil {
 			panic(err)
 		}

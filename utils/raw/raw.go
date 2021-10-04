@@ -10,17 +10,17 @@ import (
 )
 
 const (
-	_buffLen = 65535
+	_buffLen = 9000
 )
 
 var (
-	ErrLinkLayer = errors.New("link layer error")
+	ErrBufferIsFull = errors.New("buffer is full")
 )
 
 type Raw struct {
 	fd        int
 	buf       []byte
-	filter    func([]byte) bool // return true to save, or false to drop
+	filter    func([]byte) bool // return true to pass, or false to drop
 	linkLayer syscall.SockaddrLinklayer
 }
 
@@ -71,6 +71,10 @@ func (r *Raw) Read(buf []byte) (int, error) {
 			if !r.filter(r.buf[:n]) {
 				continue
 			}
+		}
+
+		if n > len(buf) {
+			return 0, errors.WithStack(ErrBufferIsFull)
 		}
 
 		copy(buf, r.buf[:n])
