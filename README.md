@@ -9,4 +9,6 @@
 * eBPF XDP: The Basics and a Quick Tutorial, Tigera, Inc.. https://www.tigera.io/learn/guides/ebpf/ebpf-xdp/
 * Integrating AF_XDP into DPDK, DPDK. https://www.dpdk.org/wp-content/uploads/sites/35/2019/07/14-AF_XDP-dpdk-summit-china-2019.pdf
 * The Path to DPDK Speeds for AF XDP. http://vger.kernel.org/lpc_net2018_talks/lpc18_paper_af_xdp_perf-v2.pdf
+* XDP卸载VxLAN参考. https://gitlab.com/mwiget/crpd-l2tpv3-xdp/-/blob/master/xdp/xdp_router.c
+* eBPF程序转Go语言（binding）. https://github.com/cilium/ebpf/tree/master/cmd/bpf2go
 
