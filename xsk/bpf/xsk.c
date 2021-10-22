@@ -58,7 +58,7 @@ int xsk_program(struct xdp_md *ctx) {
 #endif
 
     // process L2
-    if (data + sizeof(struct ethhdr) + 1 > data_end) {
+    if (data + sizeof(struct ethhdr) > data_end) {
 #if _DEBUG
         bpf_printk("  ! more than l2 header, drop");
 #endif
@@ -67,7 +67,7 @@ int xsk_program(struct xdp_md *ctx) {
     struct ethhdr *eth_hdr = data;
     switch (bpf_ntohs(eth_hdr->h_proto)) {
         case ETH_P_IP: {
-            if ((void *) eth_hdr + sizeof(struct ethhdr) + sizeof(struct iphdr) + 1 > data_end) {
+            if ((void *) eth_hdr + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end) {
 #if _DEBUG
                 bpf_printk("  ! more than ipv4 header, drop");
 #endif
@@ -115,7 +115,7 @@ int xsk_program(struct xdp_md *ctx) {
 #if _DEBUG
                 bpf_printk("  - IPv4 packet protocol: TCP");
 #endif
-                if ((void *) ipv4_hdr + sizeof(struct iphdr) + sizeof(struct tcphdr) + 1 > data_end) {
+                if ((void *) ipv4_hdr + sizeof(struct iphdr) + sizeof(struct tcphdr) > data_end) {
 #if _DEBUG
                     bpf_printk("  ! more than tcp header, drop");
 #endif
@@ -129,7 +129,7 @@ int xsk_program(struct xdp_md *ctx) {
 #if _DEBUG
                 bpf_printk("  - IPv4 packet protocol: ICMP4");
 #endif
-                if ((void *) ipv4_hdr + sizeof(struct iphdr) + sizeof(struct icmphdr) + 1 > data_end) {
+                if ((void *) ipv4_hdr + sizeof(struct iphdr) + sizeof(struct icmphdr) > data_end) {
 #if _DEBUG
                     bpf_printk("  ! more than icmp header, drop");
 #endif
@@ -147,7 +147,7 @@ int xsk_program(struct xdp_md *ctx) {
 #if _DEBUG
                 bpf_printk("  - IPv6 packet protocol: TCP");
 #endif
-                if ((void *) ipv6_hdr + sizeof(struct ipv6hdr) + sizeof(struct tcphdr) + 1 > data_end) {
+                if ((void *) ipv6_hdr + sizeof(struct ipv6hdr) + sizeof(struct tcphdr) > data_end) {
 #if _DEBUG
                     bpf_printk("  ! more than tcp header, drop");
 #endif
@@ -161,7 +161,7 @@ int xsk_program(struct xdp_md *ctx) {
 #if _DEBUG
                 bpf_printk("  - IPv6 packet protocol: ICMP6");
 #endif
-                if ((void *) ipv6_hdr + sizeof(struct ipv6hdr) + sizeof(struct icmp6hdr) + 1 > data_end) {
+                if ((void *) ipv6_hdr + sizeof(struct ipv6hdr) + sizeof(struct icmp6hdr) > data_end) {
 #if _DEBUG
                     bpf_printk("  ! more than icmp header, drop");
 #endif
