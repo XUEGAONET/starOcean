@@ -6,12 +6,18 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 )
 
 func TestNewAll(t *testing.T) {
 	const LinkName = "ens19"
 	const QueueID = 0
+
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
 
 	link, err := netlink.LinkByName(LinkName)
 	if err != nil {
@@ -26,6 +32,8 @@ func TestNewAll(t *testing.T) {
 		panic(err)
 	}
 
+	DefaultSocketFlags = unix.XDP_COPY
+	DefaultXdpFlags = unix.XDP_FLAGS_HW_MODE
 	xsk, err := NewSocket(link.Attrs().Index, QueueID, nil)
 	if err != nil {
 		panic(err)

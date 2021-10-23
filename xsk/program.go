@@ -1,7 +1,6 @@
 package xsk
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -12,8 +11,7 @@ import (
 // Only support Little Endian
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -cc clang -cflags "-O2" xsk ./bpf/xsk.c
 
-// Program represents the necessary data structures for a simple XDP program that can filter traffic
-// based on the attached rx queue.
+// Program based on the attached rx queue.
 type Program struct {
 	Program *ebpf.Program
 	Sockets *ebpf.Map
@@ -32,16 +30,16 @@ func (p *Program) Detach(Ifindex int) error {
 	return removeProgram(Ifindex)
 }
 
-// Register adds the socket file descriptor as the recipient for packets from the given queueID.
+// Register adds the socket file descriptor to map.
 func (p *Program) Register(queueID int, fd int) error {
 	if err := p.Sockets.Put(uint32(queueID), uint32(fd)); err != nil {
-		return fmt.Errorf("failed to update xsksMap: %v", err)
+		return err
 	}
 
 	return nil
 }
 
-// Unregister removes any associated mapping to sockets for the given queueID.
+// Unregister removes the socket file descriptor from map.
 func (p *Program) Unregister(queueID int) error {
 	if err := p.Sockets.Delete(uint32(queueID)); err != nil {
 		return err
@@ -51,17 +49,17 @@ func (p *Program) Unregister(queueID int) error {
 
 // Close closes and frees the resources allocated for the Program.
 func (p *Program) Close() error {
-	allErrors := []error{}
+	var allErrors []error
 	if p.Sockets != nil {
 		if err := p.Sockets.Close(); err != nil {
-			allErrors = append(allErrors, fmt.Errorf("failed to close xsksMap: %v", err))
+			allErrors = append(allErrors, err)
 		}
 		p.Sockets = nil
 	}
 
 	if p.Program != nil {
 		if err := p.Program.Close(); err != nil {
-			allErrors = append(allErrors, fmt.Errorf("failed to close XDP program: %v", err))
+			allErrors = append(allErrors, err)
 		}
 		p.Program = nil
 	}
@@ -87,18 +85,18 @@ func removeProgram(Ifindex int) error {
 	var err error
 	link, err = netlink.LinkByIndex(Ifindex)
 	if err != nil {
-		return err
+		return errors.WithMessage(err, "get link by index failed")
 	}
 	if !isXdpAttached(link) {
 		return nil
 	}
 	if err = netlink.LinkSetXdpFd(link, -1); err != nil {
-		return fmt.Errorf("netlink.LinkSetXdpFd(link, -1) failed: %v", err)
+		return errors.WithMessage(err, "netlink.LinkSetXdpFd(link, -1) failed")
 	}
 	for {
 		link, err = netlink.LinkByIndex(Ifindex)
 		if err != nil {
-			return err
+			return errors.WithMessage(err, "get link by index failed")
 		}
 		if !isXdpAttached(link) {
 			break
@@ -119,7 +117,12 @@ func isXdpAttached(link netlink.Link) bool {
 func attachProgram(Ifindex int, program *ebpf.Program) error {
 	link, err := netlink.LinkByIndex(Ifindex)
 	if err != nil {
-		return err
+		return errors.WithMessage(err, "get link by index failed")
 	}
-	return netlink.LinkSetXdpFdWithFlags(link, program.FD(), int(DefaultXdpFlags))
+
+	if err = netlink.LinkSetXdpFdWithFlags(link, program.FD(), int(DefaultXdpFlags)); err != nil {
+		return errors.WithMessage(err, "netlink.LinkSetXdpFdWithFlags set failed")
+	}
+
+	return nil
 }
