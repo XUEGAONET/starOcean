@@ -73,7 +73,7 @@ func (p *Program) Close() error {
 func NewProgram() (*Program, error) {
 	var objs xskObjects
 	if err := loadXskObjects(&objs, nil); err != nil {
-		return nil, errors.WithMessage(err, "load xsk objects failed")
+		return nil, errors.Wrap(err, "load xsk objects failed")
 	}
 
 	return &Program{Program: objs.XskProgram, Sockets: objs.XsksMap}, nil
@@ -85,18 +85,18 @@ func removeProgram(Ifindex int) error {
 	var err error
 	link, err = netlink.LinkByIndex(Ifindex)
 	if err != nil {
-		return errors.WithMessage(err, "get link by index failed")
+		return errors.Wrap(err, "get link by index failed")
 	}
 	if !isXdpAttached(link) {
 		return nil
 	}
 	if err = netlink.LinkSetXdpFd(link, -1); err != nil {
-		return errors.WithMessage(err, "netlink.LinkSetXdpFd(link, -1) failed")
+		return errors.Wrap(err, "netlink.LinkSetXdpFd(link, -1) failed")
 	}
 	for {
 		link, err = netlink.LinkByIndex(Ifindex)
 		if err != nil {
-			return errors.WithMessage(err, "get link by index failed")
+			return errors.Wrap(err, "get link by index failed")
 		}
 		if !isXdpAttached(link) {
 			break
@@ -117,11 +117,11 @@ func isXdpAttached(link netlink.Link) bool {
 func attachProgram(Ifindex int, program *ebpf.Program) error {
 	link, err := netlink.LinkByIndex(Ifindex)
 	if err != nil {
-		return errors.WithMessage(err, "get link by index failed")
+		return errors.Wrap(err, "get link by index failed")
 	}
 
 	if err = netlink.LinkSetXdpFdWithFlags(link, program.FD(), int(DefaultXdpFlags)); err != nil {
-		return errors.WithMessage(err, "netlink.LinkSetXdpFdWithFlags set failed")
+		return errors.Wrap(err, "netlink.LinkSetXdpFdWithFlags set failed")
 	}
 
 	return nil

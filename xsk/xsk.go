@@ -118,7 +118,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 
 	xsk.fd, err = syscall.Socket(unix.AF_XDP, syscall.SOCK_RAW, 0)
 	if err != nil {
-		return nil, errors.WithMessage(err, "syscall.Socket failed")
+		return nil, errors.Wrap(err, "syscall.Socket failed")
 	}
 
 	xsk.umem, err = syscall.Mmap(-1, 0, options.NumFrame*options.SizeFrame,
@@ -126,7 +126,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "syscall.Mmap failed")
+		return nil, errors.Wrap(err, "syscall.Mmap failed")
 	}
 
 	xdpUmemReg := unix.XDPUmemReg{
@@ -145,35 +145,35 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		unsafe.Sizeof(xdpUmemReg), 0)
 	if rc != 0 {
 		xsk.Close()
-		return nil, errors.WithMessage(errno, "unix.SetsockoptUint64 XDP_UMEM_REG failed")
+		return nil, errors.Wrap(errno, "unix.SetsockoptUint64 XDP_UMEM_REG failed")
 	}
 
 	err = syscall.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_UMEM_FILL_RING,
 		options.NumFillRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "unix.SetsockoptUint64 XDP_UMEM_FILL_RING failed")
+		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_UMEM_FILL_RING failed")
 	}
 
 	err = unix.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_UMEM_COMPLETION_RING,
 		options.NumCompletionRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "unix.SetsockoptUint64 XDP_UMEM_COMPLETION_RING failed")
+		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_UMEM_COMPLETION_RING failed")
 	}
 
 	err = unix.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_RX_RING,
 		options.NumRxRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "unix.SetsockoptUint64 XDP_RX_RING failed")
+		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_RX_RING failed")
 	}
 
 	err = unix.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_TX_RING,
 		options.NumTxRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "unix.SetsockoptUint64 XDP_TX_RING failed")
+		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_TX_RING failed")
 	}
 
 	var offsets unix.XDPMmapOffsets
@@ -185,7 +185,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		uintptr(unsafe.Pointer(&vallen)), 0)
 	if rc != 0 {
 		xsk.Close()
-		return nil, errors.WithMessage(errno, "unix.Syscall6 getsockopt XDP_MMAP_OFFSETS failed")
+		return nil, errors.Wrap(errno, "unix.Syscall6 getsockopt XDP_MMAP_OFFSETS failed")
 	}
 
 	fillRingSlice, err := syscall.Mmap(xsk.fd, unix.XDP_UMEM_PGOFF_FILL_RING,
@@ -194,7 +194,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "syscall.Mmap XDP_UMEM_PGOFF_FILL_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap XDP_UMEM_PGOFF_FILL_RING failed")
 	}
 
 	xsk.fillRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&fillRingSlice[0])) + uintptr(offsets.Fr.Producer)))
@@ -210,7 +210,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "syscall.Mmap XDP_UMEM_PGOFF_COMPLETION_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap XDP_UMEM_PGOFF_COMPLETION_RING failed")
 	}
 
 	xsk.completionRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&completionRingSlice[0])) + uintptr(offsets.Cr.Producer)))
@@ -227,7 +227,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "syscall.Mmap XDP_PGOFF_RX_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap XDP_PGOFF_RX_RING failed")
 	}
 
 	xsk.rxRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&rxRingSlice[0])) + uintptr(offsets.Rx.Producer)))
@@ -247,7 +247,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "syscall.Mmap XDP_PGOFF_TX_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap XDP_PGOFF_TX_RING failed")
 	}
 
 	xsk.txRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&txRingSlice[0])) + uintptr(offsets.Tx.Producer)))
@@ -265,7 +265,7 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 	}
 	if err = unix.Bind(xsk.fd, &sa); err != nil {
 		xsk.Close()
-		return nil, errors.WithMessage(err, "syscall.Bind SockaddrXDP failed")
+		return nil, errors.Wrap(err, "syscall.Bind SockaddrXDP failed")
 	}
 
 	xsk.freeDescs = make([]bool, options.NumFrame)
@@ -449,7 +449,7 @@ func (xsk *Socket) Close() error {
 
 	if xsk.fd != -1 {
 		if err = unix.Close(xsk.fd); err != nil {
-			allErrors = append(allErrors, errors.WithMessage(err, "failed to close XDP socket"))
+			allErrors = append(allErrors, errors.Wrap(err, "failed to close XDP socket"))
 		}
 		xsk.fd = -1
 
@@ -478,7 +478,7 @@ func (xsk *Socket) Close() error {
 
 	if xsk.umem != nil {
 		if err := syscall.Munmap(xsk.umem); err != nil {
-			allErrors = append(allErrors, errors.WithMessage(err, "failed to unmap the UMEM"))
+			allErrors = append(allErrors, errors.Wrap(err, "failed to unmap the UMEM"))
 		}
 		xsk.umem = nil
 	}
@@ -613,7 +613,7 @@ func (xsk *Socket) Stats() (Stats, error) {
 		uintptr(unsafe.Pointer(&stats.KernelStats)),
 		uintptr(unsafe.Pointer(&size)), 0)
 	if rc != 0 {
-		return stats, errors.WithMessage(errno, "getsockopt XDP_STATISTICS failed")
+		return stats, errors.Wrap(errno, "getsockopt XDP_STATISTICS failed")
 	}
 	return stats, nil
 }
