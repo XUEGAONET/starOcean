@@ -416,6 +416,29 @@ func (xsk *Socket) Poll(timeout int) (numReceived int, numCompleted int, err err
 	return
 }
 
+func (xsk *Socket) PollAdvanced(timeout int, eventFlag int16) (numReceived int, numCompleted int, err error) {
+	if eventFlag == 0 {
+		return
+	}
+
+	var pfds [1]unix.PollFd
+	pfds[0].Fd = int32(xsk.fd)
+	pfds[0].Events = eventFlag
+	for err = unix.EINTR; err == unix.EINTR; {
+		_, err = unix.Poll(pfds[:], timeout)
+	}
+	if err != nil {
+		return 0, 0, errors.WithStack(err)
+	}
+
+	numReceived = xsk.NumReceived()
+	if numCompleted = xsk.NumCompleted(); numCompleted > 0 {
+		xsk.Complete(numCompleted)
+	}
+
+	return
+}
+
 // GetDescs returns up to n descriptors which are not currently in use.
 func (xsk *Socket) GetDescs(n int) []Desc {
 	if n > len(xsk.freeDescs) {

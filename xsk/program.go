@@ -9,7 +9,10 @@ import (
 )
 
 // Only support Little Endian
+// production use
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -cc clang -cflags "-O2" xsk ./bpf/xsk.c
+// test use
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target bpfel -cc clang -cflags "-O2" xsk ./bpf/xsk_test_icmp.c
 
 // Program based on the attached rx queue.
 type Program struct {
