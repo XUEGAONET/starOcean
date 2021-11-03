@@ -10,7 +10,10 @@
 #include <linux/types.h>
 #include <bpf/bpf_helpers.h>
 
-struct bpf_map_def SEC("maps") xsks_map = {
+struct bpf_map_def SEC(
+
+"maps")
+xsks_map = {
         .type = BPF_MAP_TYPE_XSKMAP,
         .key_size = sizeof(int),
         .value_size = sizeof(int),
@@ -18,6 +21,7 @@ struct bpf_map_def SEC("maps") xsks_map = {
 };
 
 SEC("xdp_starOcean")
+
 int xsk_program(struct xdp_md *ctx) {
     void *data = (void *) (long) ctx->data;
     void *data_end = (void *) (long) ctx->data_end;
@@ -38,8 +42,17 @@ int xsk_program(struct xdp_md *ctx) {
             ipv4_hdr = (void *) eth_hdr + sizeof(struct ethhdr);
             break;
         }
-        case ETH_P_ARP: // accept all ARP packet
-            return XDP_PASS;
+        case ETH_P_ARP:
+            if ((void *) eth_hdr + sizeof(struct ethhdr) + 8 + 6 + 4 + 6 + 4 > data_end) {
+                return XDP_DROP;
+            }
+
+            int index = ctx->rx_queue_index;
+            if (bpf_map_lookup_elem(&xsks_map, &index)) {
+                return (int) bpf_redirect_map(&xsks_map, index, 0);
+            }
+
+            return XDP_DROP;
         default:
             return XDP_DROP;
     }
