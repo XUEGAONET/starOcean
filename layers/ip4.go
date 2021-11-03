@@ -55,6 +55,11 @@ const (
 //  };
 type IPv4 []byte
 
+const (
+	LengthIPv4Min = 20
+	LengthIPv4Max = 60
+)
+
 func (p *IPv4) GetVersion() uint8 {
 	return (*p)[0] >> 4
 }

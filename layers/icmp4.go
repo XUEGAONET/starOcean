@@ -57,6 +57,8 @@ const (
 
 type ICMPv4 []byte
 
+const LengthICMPv4 = 8
+
 func (i *ICMPv4) GetType() uint8 {
 	return *&(*i)[0]
 }
