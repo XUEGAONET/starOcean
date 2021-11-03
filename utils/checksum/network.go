@@ -3,6 +3,7 @@ package checksum
 // Calculate the TCP/IP checksum defined in rfc1071.  The passed-in csum is any
 // initial checksum data that's already been computed.
 // GRE, ICMPv4, TCP/IP can use it.
+//go:inline
 func TCPIPChecksum(data []byte, baseCSum uint32) uint16 {
 	// 避免重复获取长度
 	length := len(data)
