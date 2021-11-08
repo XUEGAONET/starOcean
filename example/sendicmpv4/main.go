@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
-	"time"
 
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/pkg/errors"
@@ -63,16 +62,27 @@ func main() {
 		panic(err)
 	}
 
+	// 添加eBPF程序到网卡
 	program, err := xsk.NewProgram()
 	if err != nil {
 		panic(err)
 	}
-
 	if err = program.Attach(link.Attrs().Index); err != nil {
 		panic(err)
 	}
 
-	socket, err := xsk.NewSocket(link.Attrs().Index, *queueID, nil)
+	// 原本有定期发送FreeARP，但是由于并行可能会产生问题，删除了此部分代码
+
+	socket, err := xsk.NewSocket(link.Attrs().Index, *queueID, &xsk.SocketOptions{
+		NumFrame:              4096,
+		SizeFrame:             2048,
+		NumFillRingDesc:       2048,
+		NumCompletionRingDesc: 2048,
+		NumRxRingDesc:         2048,
+		NumTxRingDesc:         2048,
+		UseHugePage:           true,
+		HugePage1Gb:           true,
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -90,25 +100,6 @@ func main() {
 			panic(errors.Wrap(err, "detach failed"))
 		}
 		os.Exit(0)
-	}()
-
-	// 处理ARP，并且周期发送FreeARP
-	go func() {
-		ch := time.NewTicker(time.Second * 10)
-		defer ch.Stop()
-
-		for {
-			<-ch.C
-
-			descs := socket.GetDescs(1)
-			if len(descs) == 0 {
-				continue
-			}
-
-			desc := descs[0]
-			genGratuitousARP(socket, &desc)
-			socket.Complete(socket.Transmit([]xsk.Desc{desc}))
-		}
 	}()
 
 	for {

@@ -25,6 +25,8 @@ var DefaultSocketOptions = SocketOptions{
 	NumCompletionRingDesc: 64,
 	NumRxRingDesc:         64,
 	NumTxRingDesc:         64,
+	UseHugePage:           false,
+	HugePage1Gb:           false,
 }
 
 type umemRing struct {
@@ -66,6 +68,9 @@ type SocketOptions struct {
 	NumCompletionRingDesc int
 	NumRxRingDesc         int
 	NumTxRingDesc         int
+
+	UseHugePage bool
+	HugePage1Gb bool
 }
 
 // Desc represents an XDP Rx/Tx descriptor.
@@ -121,9 +126,16 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		return nil, errors.Wrap(err, "syscall.Socket failed")
 	}
 
+	flag := syscall.MAP_PRIVATE | syscall.MAP_ANONYMOUS | syscall.MAP_POPULATE
+	if options.UseHugePage {
+		flag |= unix.MAP_HUGETLB
+		if options.HugePage1Gb {
+			flag |= 30 << unix.MAP_HUGE_SHIFT
+		}
+	}
+
 	xsk.umem, err = syscall.Mmap(-1, 0, options.NumFrame*options.SizeFrame,
-		syscall.PROT_READ|syscall.PROT_WRITE,
-		syscall.MAP_PRIVATE|syscall.MAP_ANONYMOUS|syscall.MAP_POPULATE)
+		syscall.PROT_READ|syscall.PROT_WRITE, flag)
 	if err != nil {
 		xsk.Close()
 		return nil, errors.Wrap(err, "syscall.Mmap failed")
