@@ -27,6 +27,7 @@ int xsk_program(struct xdp_md *ctx) {
     void *data_end = (void *) (long) ctx->data_end;
     struct iphdr *ipv4_hdr = NULL;
     struct icmphdr *icmp4_hdr = NULL;
+    int index = ctx->rx_queue_index;
 
     // process L2
     if (data + sizeof(struct ethhdr) > data_end) {
@@ -47,7 +48,6 @@ int xsk_program(struct xdp_md *ctx) {
                 return XDP_DROP;
             }
 
-            int index = ctx->rx_queue_index;
             if (bpf_map_lookup_elem(&xsks_map, &index)) {
                 return (int) bpf_redirect_map(&xsks_map, index, 0);
             }
@@ -79,7 +79,6 @@ int xsk_program(struct xdp_md *ctx) {
             return XDP_DROP;
         }
 
-        int index = ctx->rx_queue_index;
         if (bpf_map_lookup_elem(&xsks_map, &index)) {
             return (int) bpf_redirect_map(&xsks_map, index, 0);
         }

@@ -12,118 +12,27 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/cilium/ebpf"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
-// DefaultSocketOptions is the default SocketOptions used by an xdp.Socket created without specifying options.
-var DefaultSocketOptions = SocketOptions{
-	NumFrame:              128,
-	SizeFrame:             2048,
-	NumFillRingDesc:       64,
-	NumCompletionRingDesc: 64,
-	NumRxRingDesc:         64,
-	NumTxRingDesc:         64,
-	UseHugePage:           false,
-	HugePage1Gb:           false,
-}
-
-type umemRing struct {
-	Producer *uint32
-	Consumer *uint32
-	Descs    []uint64
-}
-
-type rxTxRing struct {
-	Producer *uint32
-	Consumer *uint32
-	Descs    []Desc
-}
-
-// A Socket is an implementation of the AF_XDP Linux socket type for reading packets from a device.
-type Socket struct {
-	fd             int
-	umem           []byte
-	fillRing       umemRing
-	rxRing         rxTxRing
-	txRing         rxTxRing
-	completionRing umemRing
-	xsksMap        *ebpf.Map
-	program        *ebpf.Program
-	ifindex        int
-	numTransmitted int
-	numFilled      int
-	freeDescs      []bool
-	options        SocketOptions
-	rxDescs        []Desc
-	getDescs       []Desc
-}
-
-// SocketOptions are configuration settings used to bind an XDP socket.
-type SocketOptions struct {
-	NumFrame              int
-	SizeFrame             int
-	NumFillRingDesc       int
-	NumCompletionRingDesc int
-	NumRxRingDesc         int
-	NumTxRingDesc         int
-
-	UseHugePage bool
-	HugePage1Gb bool
-}
-
-// Desc represents an XDP Rx/Tx descriptor.
-type Desc unix.XDPDesc
-
-// Stats contains various counters of the XDP socket, such as numbers of
-// sent/received frames.
-type Stats struct {
-	// Filled is the number of items consumed thus far by the Linux kernel
-	// from the Fill ring queue.
-	Filled uint64
-
-	// Received is the number of items consumed thus far by the user of
-	// this package from the Rx ring queue.
-	Received uint64
-
-	// Transmitted is the number of items consumed thus far by the Linux
-	// kernel from the Tx ring queue.
-	Transmitted uint64
-
-	// Completed is the number of items consumed thus far by the user of
-	// this package from the Completion ring queue.
-	Completed uint64
-
-	// KernelStats contains the in-kernel statistics of the corresponding
-	// XDP socket, such as the number of invalid descriptors that were
-	// submitted into Fill or Tx ring queues.
-	KernelStats unix.XDPStatistics
-}
-
-// DefaultSocketFlags are the flags which are passed to bind(2) system call
-// when the XDP socket is bound, possible values include unix.XDP_SHARED_UMEM,
-// unix.XDP_COPY, unix.XDP_ZEROCOPY.
-var DefaultSocketFlags uint16 = 0
-
-// DefaultXdpFlags are the flags which are passed when the XDP program is
-// attached to the network link, possible values include
-// unix.XDP_FLAGS_DRV_MODE, unix.XDP_FLAGS_HW_MODE, unix.XDP_FLAGS_SKB_MODE,
-// unix.XDP_FLAGS_UPDATE_IF_NOEXIST.
-var DefaultXdpFlags uint32 = 0
-
-// NewSocket returns a new XDP socket attached to the network interface which
-// has the given interface, and attached to the given queue on that network
-// interface.
+// NewSocket 将会创建新的AF_XDP套接字。
+// 请在载入eBPF程序后使用。
 func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, err error) {
 	if options == nil {
-		options = &DefaultSocketOptions
+		return nil, fmt.Errorf("SocketOptions is a nil pointer")
 	}
+
 	xsk = &Socket{fd: -1, ifindex: Ifindex, options: *options}
+	xsk.numFillRingDescMask = uint32(options.NumFillRingDesc) - 1
+	xsk.numCompletionRingDescMask = uint32(options.NumCompletionRingDesc) - 1
+	xsk.numRxRingDescMask = uint32(options.NumRxRingDesc) - 1
+	xsk.numTxRingDescMask = uint32(options.NumTxRingDesc) - 1
 
 	xsk.fd, err = syscall.Socket(unix.AF_XDP, syscall.SOCK_RAW, 0)
 	if err != nil {
-		return nil, errors.Wrap(err, "syscall.Socket failed")
+		return nil, errors.Wrap(err, "syscall.Socket create xdp fd failed")
 	}
 
 	flag := syscall.MAP_PRIVATE | syscall.MAP_ANONYMOUS | syscall.MAP_POPULATE
@@ -134,12 +43,39 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		}
 	}
 
-	xsk.umem, err = syscall.Mmap(-1, 0, options.NumFrame*options.SizeFrame,
+	memBufSize := options.NumFrame*options.SizeFrame + 4*options.NumFrame*int(unsafe.Sizeof(Desc{}))
+	log.Infof("allocate %dkb by using mmap", memBufSize)
+
+	memBuf, err := syscall.Mmap(-1, 0, memBufSize,
 		syscall.PROT_READ|syscall.PROT_WRITE, flag)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "syscall.Mmap failed")
+		return nil, errors.Wrap(err, "syscall.Mmap umem failed")
 	}
+
+	xsk.umem = memBuf[:options.NumFrame*options.SizeFrame]
+
+	var sh *reflect.SliceHeader
+
+	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.fillDescs))
+	sh.Data = uintptr(unsafe.Pointer(&memBuf[options.NumFrame*options.SizeFrame+0*options.NumFrame*int(unsafe.Sizeof(Desc{}))]))
+	sh.Len = options.NumFrame
+	sh.Cap = options.NumFrame
+
+	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.completeDescs))
+	sh.Data = uintptr(unsafe.Pointer(&memBuf[options.NumFrame*options.SizeFrame+1*options.NumFrame*int(unsafe.Sizeof(Desc{}))]))
+	sh.Len = options.NumFrame
+	sh.Cap = options.NumFrame
+
+	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.rxDescs))
+	sh.Data = uintptr(unsafe.Pointer(&memBuf[options.NumFrame*options.SizeFrame+2*options.NumFrame*int(unsafe.Sizeof(Desc{}))]))
+	sh.Len = options.NumFrame
+	sh.Cap = options.NumFrame
+
+	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.txDescs))
+	sh.Data = uintptr(unsafe.Pointer(&memBuf[options.NumFrame*options.SizeFrame+3*options.NumFrame*int(unsafe.Sizeof(Desc{}))]))
+	sh.Len = options.NumFrame
+	sh.Cap = options.NumFrame
 
 	xdpUmemReg := unix.XDPUmemReg{
 		Addr:     uint64(uintptr(unsafe.Pointer(&xsk.umem[0]))),
@@ -157,35 +93,35 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		unsafe.Sizeof(xdpUmemReg), 0)
 	if rc != 0 {
 		xsk.Close()
-		return nil, errors.Wrap(errno, "unix.SetsockoptUint64 XDP_UMEM_REG failed")
+		return nil, errors.Wrap(errno, "SYS_SETSOCKOPT XDP_UMEM_REG failed")
 	}
 
 	err = syscall.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_UMEM_FILL_RING,
 		options.NumFillRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_UMEM_FILL_RING failed")
+		return nil, errors.Wrap(err, "SYS_SETSOCKOPT XDP_UMEM_FILL_RING failed")
 	}
 
 	err = unix.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_UMEM_COMPLETION_RING,
 		options.NumCompletionRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_UMEM_COMPLETION_RING failed")
+		return nil, errors.Wrap(err, "SYS_SETSOCKOPT XDP_UMEM_COMPLETION_RING failed")
 	}
 
 	err = unix.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_RX_RING,
 		options.NumRxRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_RX_RING failed")
+		return nil, errors.Wrap(err, "SYS_SETSOCKOPT XDP_RX_RING failed")
 	}
 
 	err = unix.SetsockoptInt(xsk.fd, unix.SOL_XDP, unix.XDP_TX_RING,
 		options.NumTxRingDesc)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "unix.SetsockoptUint64 XDP_TX_RING failed")
+		return nil, errors.Wrap(err, "SYS_SETSOCKOPT XDP_TX_RING failed")
 	}
 
 	var offsets unix.XDPMmapOffsets
@@ -197,34 +133,34 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		uintptr(unsafe.Pointer(&vallen)), 0)
 	if rc != 0 {
 		xsk.Close()
-		return nil, errors.Wrap(errno, "unix.Syscall6 getsockopt XDP_MMAP_OFFSETS failed")
+		return nil, errors.Wrap(errno, "SYS_GETSOCKOPT XDP_MMAP_OFFSETS failed")
 	}
 
+	// process fill ring
 	fillRingSlice, err := syscall.Mmap(xsk.fd, unix.XDP_UMEM_PGOFF_FILL_RING,
 		int(offsets.Fr.Desc+uint64(options.NumFillRingDesc)*uint64(unsafe.Sizeof(uint64(0)))),
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "syscall.Mmap XDP_UMEM_PGOFF_FILL_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap fill ring failed")
 	}
-
 	xsk.fillRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&fillRingSlice[0])) + uintptr(offsets.Fr.Producer)))
 	xsk.fillRing.Consumer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&fillRingSlice[0])) + uintptr(offsets.Fr.Consumer)))
-	sh := (*reflect.SliceHeader)(unsafe.Pointer(&xsk.fillRing.Descs))
+	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.fillRing.Descs))
 	sh.Data = uintptr(unsafe.Pointer(&fillRingSlice[0])) + uintptr(offsets.Fr.Desc)
 	sh.Len = options.NumFillRingDesc
 	sh.Cap = options.NumFillRingDesc
 
+	// process completion ring
 	completionRingSlice, err := syscall.Mmap(xsk.fd, unix.XDP_UMEM_PGOFF_COMPLETION_RING,
 		int(offsets.Cr.Desc+uint64(options.NumCompletionRingDesc)*uint64(unsafe.Sizeof(uint64(0)))),
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "syscall.Mmap XDP_UMEM_PGOFF_COMPLETION_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap completion ring failed")
 	}
-
 	xsk.completionRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&completionRingSlice[0])) + uintptr(offsets.Cr.Producer)))
 	xsk.completionRing.Consumer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&completionRingSlice[0])) + uintptr(offsets.Cr.Consumer)))
 	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.completionRing.Descs))
@@ -232,16 +168,15 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 	sh.Len = options.NumCompletionRingDesc
 	sh.Cap = options.NumCompletionRingDesc
 
-	// register rx ring
+	// process rx ring
 	rxRingSlice, err := syscall.Mmap(xsk.fd, unix.XDP_PGOFF_RX_RING,
 		int(offsets.Rx.Desc+uint64(options.NumRxRingDesc)*uint64(unsafe.Sizeof(Desc{}))),
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "syscall.Mmap XDP_PGOFF_RX_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap rx ring failed")
 	}
-
 	xsk.rxRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&rxRingSlice[0])) + uintptr(offsets.Rx.Producer)))
 	xsk.rxRing.Consumer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&rxRingSlice[0])) + uintptr(offsets.Rx.Consumer)))
 	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.rxRing.Descs))
@@ -249,26 +184,21 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 	sh.Len = options.NumRxRingDesc
 	sh.Cap = options.NumRxRingDesc
 
-	xsk.rxDescs = make([]Desc, 0, options.NumRxRingDesc)
-	// register rx ring end
-
-	// register tx ring
+	// process tx ring
 	txRingSlice, err := syscall.Mmap(xsk.fd, unix.XDP_PGOFF_TX_RING,
 		int(offsets.Tx.Desc+uint64(options.NumTxRingDesc)*uint64(unsafe.Sizeof(Desc{}))),
 		syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_SHARED|syscall.MAP_POPULATE)
 	if err != nil {
 		xsk.Close()
-		return nil, errors.Wrap(err, "syscall.Mmap XDP_PGOFF_TX_RING failed")
+		return nil, errors.Wrap(err, "syscall.Mmap tx ring failed")
 	}
-
 	xsk.txRing.Producer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&txRingSlice[0])) + uintptr(offsets.Tx.Producer)))
 	xsk.txRing.Consumer = (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&txRingSlice[0])) + uintptr(offsets.Tx.Consumer)))
 	sh = (*reflect.SliceHeader)(unsafe.Pointer(&xsk.txRing.Descs))
 	sh.Data = uintptr(unsafe.Pointer(&txRingSlice[0])) + uintptr(offsets.Tx.Desc)
 	sh.Len = options.NumTxRingDesc
 	sh.Cap = options.NumTxRingDesc
-	// register tx ring end
 
 	sa := unix.SockaddrXDP{
 		Flags:   DefaultSocketFlags,
@@ -280,181 +210,184 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		return nil, errors.Wrap(err, "syscall.Bind SockaddrXDP failed")
 	}
 
-	xsk.freeDescs = make([]bool, options.NumFrame)
-	for i := 0; i < options.NumFrame; i++ {
-		xsk.freeDescs[i] = true
-	}
-	xsk.getDescs = make([]Desc, 0, options.NumFrame)
-
 	return xsk, nil
 }
 
-// Fill submits the given descriptors to be filled (i.e. to receive frames into)
-// it returns how many descriptors where actually put onto Fill ring queue.
-// The descriptors can be acquired either by calling the GetDescs() method or
-// by calling Receive() method.
+// Fill 会将Desc的Addr填充到对应FR中的Desc中，以准备接收。
+// 其不会检查空余数量，请务必使用 GetFreeFillDescs 获取并传入。
 func (xsk *Socket) Fill(descs []Desc) int {
-	numFreeSlots := xsk.NumFreeFillSlots()
-	if numFreeSlots < len(descs) {
-		descs = descs[:numFreeSlots]
+	if descs == nil {
+		return 0
 	}
 
 	prod := *xsk.fillRing.Producer
 	for _, desc := range descs {
-		xsk.fillRing.Descs[prod&uint32(xsk.options.NumFillRingDesc-1)] = desc.Addr
+		xsk.fillRing.Descs[prod&xsk.numFillRingDescMask] = desc.Addr
 		prod++
-		xsk.freeDescs[desc.Addr/uint64(xsk.options.SizeFrame)] = false
 	}
-	//fencer.SFence()
 	*xsk.fillRing.Producer = prod
 
-	xsk.numFilled += len(descs)
+	xsk.countFilled += uint64(len(descs))
 
 	return len(descs)
 }
 
-// Receive returns the descriptors which were filled, i.e. into which frames
-// were received into.
-func (xsk *Socket) Receive(num int) []Desc {
-	numAvailable := xsk.NumReceived()
-	if num > int(numAvailable) {
-		num = int(numAvailable)
-	}
-
+// Receive 会接收n个Desc并返回。
+// 其不会检查RxRing中真正收到了多少，因此请务必使用 Poll 获取到正确的值之后再传入。
+func (xsk *Socket) Receive(n int) []Desc {
 	descs := xsk.rxDescs[:0]
 	cons := *xsk.rxRing.Consumer
-	//fencer.LFence()
-	for i := 0; i < num; i++ {
-		descs = append(descs, xsk.rxRing.Descs[cons&uint32(xsk.options.NumRxRingDesc-1)])
+	for i := 0; i < n; i++ {
+		descs = append(descs, xsk.rxRing.Descs[cons&xsk.numRxRingDescMask])
 		cons++
-		xsk.freeDescs[descs[i].Addr/uint64(xsk.options.SizeFrame)] = true
 	}
-	//fencer.MFence()
 	*xsk.rxRing.Consumer = cons
 
-	xsk.numFilled -= len(descs)
+	xsk.countReceived += uint64(n)
 
 	return descs
 }
 
-// Transmit submits the given descriptors to be sent out, it returns how many
-// descriptors were actually pushed onto the Tx ring queue.
-// The descriptors can be acquired either by calling the GetDescs() method or
-// by calling Receive() method.
-func (xsk *Socket) Transmit(descs []Desc) (numSubmitted int) {
-	numFreeSlots := xsk.NumFreeTxSlots()
-	if len(descs) > numFreeSlots {
-		descs = descs[:numFreeSlots]
-	}
-
+// Transmit 会使用给的Desc发送。
+// 其不会检查TxRing中还有多少空位，因此请务必使用 GetFreeTransmitDescs 取得的，以防止出现错误。
+// 如需共享UMEM，请自行获取空闲容量，截取确保合法的情况下，再使用 Transmit。
+func (xsk *Socket) Transmit(descs []Desc) {
 	prod := *xsk.txRing.Producer
-	for _, desc := range descs {
-		xsk.txRing.Descs[prod&uint32(xsk.options.NumTxRingDesc-1)] = desc
+	for i, _ := range descs {
+		xsk.txRing.Descs[prod&xsk.numTxRingDescMask] = descs[i]
 		prod++
-		xsk.freeDescs[desc.Addr/uint64(xsk.options.SizeFrame)] = false
 	}
-	//fencer.SFence()
 	*xsk.txRing.Producer = prod
 
-	xsk.numTransmitted += len(descs)
-
-	numSubmitted = len(descs)
+	xsk.countTransmitted += uint64(len(descs))
 
 	var rc uintptr
 	var errno syscall.Errno
-	for {
-		rc, _, errno = unix.Syscall6(syscall.SYS_SENDTO,
-			uintptr(xsk.fd),
-			0, 0,
-			uintptr(unix.MSG_DONTWAIT),
-			0, 0)
-		if rc != 0 {
-			switch errno {
-			case unix.EINTR:
-				// try again
-			case unix.EAGAIN:
-				return
-			case unix.EBUSY: // "completed but not sent"
-				return
-			default:
-				panic(fmt.Errorf("sendto failed with rc=%d and errno=%d", rc, errno))
-			}
-		} else {
-			break
+SEND:
+	rc, _, errno = unix.Syscall6(syscall.SYS_SENDTO,
+		uintptr(xsk.fd),
+		0, 0,
+		uintptr(unix.MSG_DONTWAIT),
+		0, 0)
+	if rc != 0 {
+		switch errno {
+		case unix.EINTR:
+			goto SEND
+		case unix.EAGAIN:
+			return
+		case unix.EBUSY: // completed but not sent
+			return
+		default:
+			log.Errorf("sendto failed with rc=%d and errno=%d", rc, errno)
+			return
 		}
 	}
 
 	return
 }
 
-// FD returns the file descriptor associated with this xdp.Socket which can be
-// used e.g. to do polling.
 func (xsk *Socket) FD() int {
 	return xsk.fd
 }
 
-// Poll blocks until kernel informs us that it has either received
-// or completed (i.e. actually sent) some frames that were previously submitted
-// using Fill() or Transmit() methods.
-// The numReceived return value can be used as the argument for subsequent
-// Receive() method call.
+// Poll 将会阻塞直到接收到相关的事件。
+// 返回的num均需要进行消费，否则会产生问题。
 func (xsk *Socket) Poll(timeout int) (numReceived int, numCompleted int, err error) {
 	var events int16
-	if xsk.numFilled > 0 {
+	// fillRing有未被消费的
+	if *xsk.fillRing.Producer-*xsk.fillRing.Consumer > 0 {
 		events |= unix.POLLIN
 	}
-	if xsk.numTransmitted > 0 {
+	// txRing中有未被消费的
+	if *xsk.txRing.Producer-*xsk.txRing.Consumer > 0 {
 		events |= unix.POLLOUT
 	}
 	if events == 0 {
 		return
 	}
 
-	var pfds [1]unix.PollFd
-	pfds[0].Fd = int32(xsk.fd)
-	pfds[0].Events = events
-	for err = unix.EINTR; err == unix.EINTR; {
-		_, err = unix.Poll(pfds[:], timeout)
+	pfd := unix.PollFd{
+		Fd:      int32(xsk.fd),
+		Events:  events,
+		Revents: 0,
 	}
-	if err != nil {
-		return 0, 0, errors.WithStack(err)
+	pfdLen := 1
+POLL:
+	_, _, errno := unix.Syscall(unix.SYS_POLL, uintptr(unsafe.Pointer(&pfd)), uintptr(pfdLen), uintptr(timeout))
+	if errno != 0 {
+		switch errno {
+		case unix.EINTR:
+			goto POLL
+		default:
+			return 0, 0, fmt.Errorf("SYS_POLL failed: fd=%d, events=%d, errno=%d",
+				xsk.fd, events, errno)
+		}
 	}
 
 	numReceived = xsk.NumReceived()
-	if numCompleted = xsk.NumCompleted(); numCompleted > 0 {
-		xsk.Complete(numCompleted)
-	}
+	numCompleted = xsk.NumCompleted()
 
 	return
 }
 
-// GetDescs returns up to n descriptors which are not currently in use.
-func (xsk *Socket) GetDescs(n int) []Desc {
-	if n > len(xsk.freeDescs) {
-		n = len(xsk.freeDescs)
+// GetFreeFillDescs 使用UMEM中的前一半的空间返回Desc，返回的数量可能和n不同，以返回的Desc数量为准。
+// 一定要使用 Receive 消费。
+// GetFreeFillDescs 只根据指针位置生产Desc，不挪动指针。挪动指针将在 Fill 阶段进行。
+func (xsk *Socket) GetFreeFillDescs(n int) []Desc {
+	free := xsk.NumFreeFillSlots()
+
+	// 没有空余时直接返回
+	if free == 0 {
+		return nil
 	}
-	descs := xsk.getDescs[:0]
-	j := 0
-	for i := 0; i < len(xsk.freeDescs) && j < n; i++ {
-		if xsk.freeDescs[i] == true {
-			descs = append(descs, Desc{
-				Addr: uint64(i) * uint64(xsk.options.SizeFrame),
-				Len:  uint32(xsk.options.SizeFrame),
-			})
-			j++
-		}
+
+	if n > free {
+		n = free
+	}
+	descs := xsk.fillDescs[:0]
+
+	prod := int(*xsk.fillRing.Producer)
+	for i := 0; i < n; i++ {
+		descs = append(descs, Desc{
+			Addr: uint64(xsk.options.SizeFrame * (prod + i) & int(xsk.numFillRingDescMask)),
+			Len:  uint32(xsk.options.SizeFrame),
+		})
 	}
 	return descs
 }
 
-// GetFrame returns the buffer containing the frame corresponding to the given
-// descriptor. The returned byte slice points to the actual buffer of the
-// corresponding frame, so modiyfing this slice modifies the frame contents.
+// GetFreeTransmitDescs 使用UMEM中的后一半的空间返回Desc，返回的数量可能和n不同，以返回的Desc数量为准。
+// 一定要使用 Complete 消费。
+// GetFreeTransmitDescs 只根据指针位置生产Desc，不挪动指针。挪动指针将在 Transmit 阶段进行。
+func (xsk *Socket) GetFreeTransmitDescs(n int) []Desc {
+	free := xsk.NumFreeTxSlots()
+
+	// 没有空余时直接返回
+	if free == 0 {
+		return nil
+	}
+
+	if n > free {
+		n = free
+	}
+	descs := xsk.txDescs[:0]
+
+	prod := int(*xsk.txRing.Producer)
+	for i := 0; i < n; i++ {
+		descs = append(descs, Desc{
+			Addr: uint64(xsk.options.SizeFrame * (xsk.options.NumFrame/2 + (prod+i)&int(xsk.numTxRingDescMask))),
+			Len:  uint32(xsk.options.SizeFrame),
+		})
+	}
+
+	return descs
+}
+
+// GetFrame 会返回一个切片，请在 SizeFrame 的长度范围内使用。
 func (xsk *Socket) GetFrame(d Desc) []byte {
 	return xsk.umem[d.Addr : d.Addr+uint64(d.Len)]
 }
 
-// Close closes and frees the resources allocated by the Socket.
 func (xsk *Socket) Close() error {
 	var allErrors []error
 	var err error
@@ -502,28 +435,13 @@ func (xsk *Socket) Close() error {
 	return nil
 }
 
-// Complete consumes up to n descriptors from the Completion ring queue to
-// which the kernel produces when it has actually transmitted a descriptor it
-// got from Tx ring queue.
-// You should use this method if you are doing polling on the xdp.Socket file
-// descriptor yourself, rather than using the Poll() method.
+// Complete 将会消费掉 Transmit 阶段产生的Desc。
 func (xsk *Socket) Complete(n int) {
-	cons := *xsk.completionRing.Consumer
-	//fencer.LFence()
-	for i := 0; i < n; i++ {
-		addr := xsk.completionRing.Descs[cons&uint32(xsk.options.NumCompletionRingDesc-1)]
-		cons++
-		xsk.freeDescs[addr/uint64(xsk.options.SizeFrame)] = true
-	}
-	//fencer.MFence()
-	*xsk.completionRing.Consumer = cons
-
-	xsk.numTransmitted -= n
+	*xsk.completionRing.Consumer += uint32(n)
+	xsk.countCompleted += uint64(n)
 }
 
-// NumFreeFillSlots returns how many free slots are available on the Fill ring
-// queue, i.e. the queue to which we produce descriptors which should be filled
-// by the kernel with incoming frames.
+// 获取FillRing中的空位置数量
 func (xsk *Socket) NumFreeFillSlots() int {
 	prod := *xsk.fillRing.Producer
 	cons := *xsk.fillRing.Consumer
@@ -537,9 +455,7 @@ func (xsk *Socket) NumFreeFillSlots() int {
 	return int(n)
 }
 
-// NumFreeTxSlots returns how many free slots are available on the Tx ring
-// queue, i.e. the queue to which we produce descriptors which should be
-// transmitted by the kernel to the wire.
+// 获取TxRing中的空位置数量
 func (xsk *Socket) NumFreeTxSlots() int {
 	prod := *xsk.txRing.Producer
 	cons := *xsk.txRing.Consumer
@@ -553,8 +469,7 @@ func (xsk *Socket) NumFreeTxSlots() int {
 	return int(n)
 }
 
-// NumReceived returns how many descriptors are there on the Rx ring queue
-// which were produced by the kernel and which we have not yet consumed.
+// 获取RxRing中的元素数量，注意不是空位置。
 func (xsk *Socket) NumReceived() int {
 	prod := *xsk.rxRing.Producer
 	cons := *xsk.rxRing.Consumer
@@ -568,8 +483,7 @@ func (xsk *Socket) NumReceived() int {
 	return int(n)
 }
 
-// NumCompleted returns how many descriptors are there on the Completion ring
-// queue which were produced by the kernel and which we have not yet consumed.
+// 获取CompleteRing中的元素数量，注意不是空位置。
 func (xsk *Socket) NumCompleted() int {
 	prod := *xsk.completionRing.Producer
 	cons := *xsk.completionRing.Consumer
@@ -583,41 +497,15 @@ func (xsk *Socket) NumCompleted() int {
 	return int(n)
 }
 
-// NumFilled returns how many descriptors are there on the Fill ring
-// queue which have not yet been consumed by the kernel.
-// This method is useful if you're polling the xdp.Socket file descriptor
-// yourself, rather than using the Poll() method - if it returns a number
-// greater than zero it means you should set the unix.POLLIN flag.
-func (xsk *Socket) NumFilled() int {
-	return xsk.numFilled
-}
-
-// NumTransmitted returns how many descriptors are there on the Tx ring queue
-// which have not yet been consumed by the kernel.
-// Note that even after the descriptors are consumed by the kernel from the Tx
-// ring queue, it doesn't mean that they have actually been sent out on the
-// wire, that can be assumed only after the descriptors have been produced by
-// the kernel to the Completion ring queue.
-// This method is useful if you're polling the xdp.Socket file descriptor
-// yourself, rather than using the Poll() method - if it returns a number
-// greater than zero it means you should set the unix.POLLOUT flag.
-func (xsk *Socket) NumTransmitted() int {
-	return xsk.numTransmitted
-}
-
-// Stats returns various statistics for this XDP socket.
 func (xsk *Socket) Stats() (Stats, error) {
 	var stats Stats
 	var size uint64
 
-	stats.Filled = uint64(*xsk.fillRing.Consumer)
-	stats.Received = uint64(*xsk.rxRing.Consumer)
-	if xsk.txRing.Consumer != nil {
-		stats.Transmitted = uint64(*xsk.txRing.Consumer)
-	}
-	if xsk.completionRing.Consumer != nil {
-		stats.Completed = uint64(*xsk.completionRing.Consumer)
-	}
+	stats.Filled = xsk.countFilled
+	stats.Completed = xsk.countCompleted
+	stats.Received = xsk.countReceived
+	stats.Transmitted = xsk.countTransmitted
+
 	size = uint64(unsafe.Sizeof(stats.KernelStats))
 	rc, _, errno := unix.Syscall6(syscall.SYS_GETSOCKOPT,
 		uintptr(xsk.fd),
@@ -625,7 +513,7 @@ func (xsk *Socket) Stats() (Stats, error) {
 		uintptr(unsafe.Pointer(&stats.KernelStats)),
 		uintptr(unsafe.Pointer(&size)), 0)
 	if rc != 0 {
-		return stats, errors.Wrap(errno, "getsockopt XDP_STATISTICS failed")
+		return stats, errors.Wrap(errno, "SYS_GETSOCKOPT XDP_STATISTICS failed")
 	}
 	return stats, nil
 }

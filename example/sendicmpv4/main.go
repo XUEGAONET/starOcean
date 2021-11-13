@@ -10,10 +10,12 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
-	"github.com/cilium/ebpf/rlimit"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
+	"golang.org/x/sys/unix"
 
 	"starOcean/layers"
 	"starOcean/utils/binary"
@@ -34,6 +36,8 @@ func main() {
 	localMAC := flag.String("mac", "", "interface mac address")
 	pprofListen := flag.String("listen", "", "pprof http server address, such as '0.0.0.0:80'")
 	_fastMode = flag.Bool("fast", false, "use fast mode")
+	hugePage := flag.Bool("hugepage", false, "use huge page")
+	gbPage := flag.Bool("gbpage", false, "use 1gb huge page, only available when hugepage enabled")
 	flag.Parse()
 
 	var err error
@@ -53,9 +57,17 @@ func main() {
 		runtime.GOMAXPROCS(4)
 	}
 
-	if err = rlimit.RemoveMemlock(); err != nil {
-		panic(err)
+	newLimit := unix.Rlimit{Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY}
+	if err := unix.Prlimit(0, unix.RLIMIT_STACK, &newLimit, nil); err != nil {
+		panic(fmt.Errorf("failed to set memstack rlimit: %v", err))
 	}
+	if err := unix.Prlimit(0, unix.RLIMIT_MEMLOCK, &newLimit, nil); err != nil {
+		panic(fmt.Errorf("failed to set memlock rlimit: %v", err))
+	}
+
+	// 单核情况下，使用该flag可以屏蔽一部分softirq
+	// 从原理上来说，有助于提高性能
+	xsk.DefaultSocketFlags = unix.XDP_USE_NEED_WAKEUP
 
 	link, err := netlink.LinkByName(*interfaceName)
 	if err != nil {
@@ -71,18 +83,17 @@ func main() {
 		panic(err)
 	}
 
-	// 原本有定期发送FreeARP，但是由于并行可能会产生问题，删除了此部分代码
-
-	socket, err := xsk.NewSocket(link.Attrs().Index, *queueID, &xsk.SocketOptions{
+	opt := xsk.SocketOptions{
 		NumFrame:              4096,
 		SizeFrame:             2048,
 		NumFillRingDesc:       2048,
 		NumCompletionRingDesc: 2048,
 		NumRxRingDesc:         2048,
 		NumTxRingDesc:         2048,
-		UseHugePage:           true,
-		HugePage1Gb:           true,
-	})
+		UseHugePage:           *hugePage,
+		HugePage1Gb:           *gbPage,
+	}
+	socket, err := xsk.NewSocket(link.Attrs().Index, *queueID, &opt)
 	if err != nil {
 		panic(err)
 	}
@@ -91,10 +102,10 @@ func main() {
 		panic(err)
 	}
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	go func() {
-		<-c
+		<-sc
 		err := program.Detach(link.Attrs().Index)
 		if err != nil {
 			panic(errors.Wrap(err, "detach failed"))
@@ -102,35 +113,73 @@ func main() {
 		os.Exit(0)
 	}()
 
-	for {
-		socket.Fill(socket.GetDescs(socket.NumFreeTxSlots()))
+	go func() {
+		tc := time.NewTicker(time.Second * 60)
+		defer tc.Stop()
+		for {
+			<-tc.C
+			stat, err := socket.Stats()
+			if err != nil {
+				log.Errorf("get statue failed: %v", err)
+				continue
+			}
 
-		// 删除了PollAdvanced函数，因为还要关注发包队列的消费情况，以便Complete用户态进行消费
-		numRx, _, err := socket.Poll(-1)
+			fmt.Printf("[Status][%s]\n"+
+				"  - Filled:               %d\n"+
+				"  - Completed:            %d\n"+
+				"  - Received:             %d\n"+
+				"  - Transmitted:          %d\n"+
+				"  - [K]RxDropped:         %d\n"+
+				"  - [K]RxInvalidDescs:    %d\n"+
+				"  - [K]TxInvalidDescs:    %d\n",
+				time.Now().String(),
+				stat.Filled,
+				stat.Completed,
+				stat.Received,
+				stat.Transmitted,
+				stat.KernelStats.Rx_dropped,
+				stat.KernelStats.Rx_invalid_descs,
+				stat.KernelStats.Tx_invalid_descs)
+		}
+	}()
+
+	log.SetOutput(os.Stdout)
+
+	var txDesc *xsk.Desc
+	txDescs := make([]xsk.Desc, 0, opt.NumFrame)
+	for {
+		socket.Fill(socket.GetFreeFillDescs(socket.NumFreeFillSlots()))
+
+		numRx, numComp, err := socket.Poll(-1)
 		if err != nil {
 			panic(err)
 		}
+		socket.Complete(numComp)
 
 		rxDescs := socket.Receive(numRx)
 		if *_fastMode {
-			var txDesc xsk.Desc
 			for i, _ := range rxDescs {
 				switch getEthernetType(socket, &rxDescs[i]) {
 				case layers.EthernetTypeIPv4:
-					txDesc = *replyICMPv4(socket, &rxDescs[i])
+					txDesc = replyICMPv4(socket, &rxDescs[i])
 				case layers.EthernetTypeARP:
-					txDesc = *replyARPRequest(socket, &rxDescs[i])
+					txDesc = replyARPRequest(socket, &rxDescs[i])
 				}
-				socket.Transmit([]xsk.Desc{txDesc})
+				if txDesc != nil {
+					socket.Transmit([]xsk.Desc{*txDesc})
+				}
 			}
 		} else {
-			var txDescs []xsk.Desc
+			txDescs = txDescs[:0]
 			for i, _ := range rxDescs {
 				switch getEthernetType(socket, &rxDescs[i]) {
 				case layers.EthernetTypeIPv4:
-					txDescs = append(txDescs, *replyICMPv4(socket, &rxDescs[i]))
+					txDesc = replyICMPv4(socket, &rxDescs[i])
 				case layers.EthernetTypeARP:
-					txDescs = append(txDescs, *replyARPRequest(socket, &rxDescs[i]))
+					txDesc = replyARPRequest(socket, &rxDescs[i])
+				}
+				if txDesc != nil {
+					txDescs = append(txDescs, *txDesc)
 				}
 			}
 			socket.Transmit(txDescs)
@@ -147,12 +196,13 @@ func replyARPRequest(socket *xsk.Socket, rxDesc *xsk.Desc) *xsk.Desc {
 	rxFrame := socket.GetFrame(*rxDesc)
 
 	if rxDesc.Len < layers.LengthEthernet+layers.LengthARP+6+4+6+4 {
+		log.Errorf("packet length error: %d", rxDesc.Len)
 		return nil
 	}
 
 	var txDesc xsk.Desc
 	for {
-		txDescs := socket.GetDescs(1)
+		txDescs := socket.GetFreeTransmitDescs(1)
 		if len(txDescs) == 1 {
 			txDesc = txDescs[0]
 			break
@@ -174,6 +224,7 @@ func replyARPRequest(socket *xsk.Socket, rxDesc *xsk.Desc) *xsk.Desc {
 		binary.Swap16(req.GetOpCode()) != layers.ARPRequest ||
 		req.GetLinkAddressLength() != 6 ||
 		req.GetProtocolAddressLength() != 4 {
+		log.Errorf("packet content error: %x", req)
 		return nil
 	}
 
