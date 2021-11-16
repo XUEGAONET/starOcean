@@ -131,31 +131,10 @@ int xsk_program(struct xdp_md *ctx) {
             icmp4_hdr = (void *) ipv4_hdr + sizeof(struct iphdr);
             if (icmp4_hdr->type != ICMP_ECHO) return XDP_DROP;
 
-            icmp4_hdr->type = ICMP_ECHOREPLY;
-            icmp4_hdr->checksum = 0;
-            // 直接去掉ICMP的数据，以支持定长的校验和计算
-            icmp4_hdr->checksum = bpf_htons(__checksum(icmp4_hdr, sizeof(struct icmphdr)));
-            // 修正IPv4总长度
-            ipv4_hdr->tot_len =
-                    bpf_htons(
-                            bpf_ntohs(ipv4_hdr->tot_len) - (data_end - ((void *) icmp4_hdr + sizeof(struct icmphdr))));
-
-            __u8 tmp_mac[ETH_ALEN];
-            __u32 tmp_ipv4;
-
-            bpf_memcpy(tmp_mac, eth_hdr->h_source, ETH_ALEN);
-            bpf_memcpy(eth_hdr->h_source, eth_hdr->h_dest, ETH_ALEN);
-            bpf_memcpy(eth_hdr->h_dest, tmp_mac, ETH_ALEN);
-
-            tmp_ipv4 = ipv4_hdr->saddr;
-            ipv4_hdr->saddr = ipv4_hdr->daddr;
-            ipv4_hdr->daddr = tmp_ipv4;
-
-            ipv4_hdr->check = 0;
-            ipv4_hdr->check = bpf_htons(__checksum(ipv4_hdr, sizeof(struct iphdr)));
-
-            // 调整尾部指针
-            bpf_xdp_adjust_tail(ctx, -(data_end - ((void *) icmp4_hdr + sizeof(struct icmphdr))));
+            // 如果能找到XDP的描述符，就重定向
+            if (bpf_map_lookup_elem(&xsks_map, &index)) {
+                return (int) bpf_redirect_map(&xsks_map, index, 0);
+            }
 
             return XDP_TX;
         }
