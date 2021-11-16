@@ -16,8 +16,10 @@ import (
 
 // Program based on the attached rx queue.
 type Program struct {
-	Program *ebpf.Program
-	Sockets *ebpf.Map
+	Program          *ebpf.Program
+	MapSockets       *ebpf.Map
+	MapIngressFilter *ebpf.Map
+	MapLocalArpTable *ebpf.Map
 }
 
 // Attach the XDP Program to an interface.
@@ -33,43 +35,14 @@ func (p *Program) Detach(Ifindex int) error {
 	return removeProgram(Ifindex)
 }
 
-// Register adds the socket file descriptor to map.
-func (p *Program) Register(queueID int, fd int) error {
-	if err := p.Sockets.Put(uint32(queueID), uint32(fd)); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// Unregister removes the socket file descriptor from map.
-func (p *Program) Unregister(queueID int) error {
-	if err := p.Sockets.Delete(uint32(queueID)); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Close closes and frees the resources allocated for the Program.
 func (p *Program) Close() error {
-	var allErrors []error
-	if p.Sockets != nil {
-		if err := p.Sockets.Close(); err != nil {
-			allErrors = append(allErrors, err)
-		}
-		p.Sockets = nil
-	}
-
 	if p.Program != nil {
 		if err := p.Program.Close(); err != nil {
-			allErrors = append(allErrors, err)
+			return err
 		}
 		p.Program = nil
 	}
 
-	if len(allErrors) > 0 {
-		return allErrors[0]
-	}
 	return nil
 }
 
@@ -79,7 +52,12 @@ func NewProgram() (*Program, error) {
 		return nil, errors.Wrap(err, "load xsk objects failed")
 	}
 
-	return &Program{Program: objs.XskProgram, Sockets: objs.XsksMap}, nil
+	return &Program{
+		Program:          objs.XskProgram,
+		MapSockets:       objs.XsksMap,
+		MapIngressFilter: objs.IngressFilter,
+		MapLocalArpTable: objs.LocalArpTable,
+	}, nil
 }
 
 // removeProgram removes an existing XDP program from the given network interface.

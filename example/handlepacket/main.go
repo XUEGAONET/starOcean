@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"starOcean/layers"
+	"starOcean/pkg/ebpf_map"
 	"starOcean/utils/binary"
 	"starOcean/utils/checksum"
 	"starOcean/xsk"
@@ -65,7 +66,7 @@ func main() {
 		panic(fmt.Errorf("failed to set memlock rlimit: %v", err))
 	}
 
-	// 单核情况下，使用该flag可以屏蔽一部分softirq
+	// 单核情况下，使用该flag可以屏蔽一部分hwirq
 	// 从原理上来说，有助于提高性能
 	xsk.DefaultSocketFlags = unix.XDP_USE_NEED_WAKEUP
 
@@ -80,6 +81,16 @@ func main() {
 		panic(err)
 	}
 	if err = program.Attach(link.Attrs().Index); err != nil {
+		panic(err)
+	}
+
+	err = ebpf_map.PutLocalArpRecord(program.MapLocalArpTable, _localIP.String(), _localMAC.String())
+	if err != nil {
+		panic(err)
+	}
+
+	err = ebpf_map.PutIngressFilterRecord(program.MapIngressFilter, "tcp", 443)
+	if err != nil {
 		panic(err)
 	}
 
@@ -98,7 +109,8 @@ func main() {
 		panic(err)
 	}
 
-	if err = program.Register(*queueID, socket.FD()); err != nil {
+	err = program.MapSockets.Put(uint32(*queueID), uint32(socket.FD()))
+	if err != nil {
 		panic(err)
 	}
 

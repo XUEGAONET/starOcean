@@ -60,7 +60,9 @@ type xskProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type xskMapSpecs struct {
-	XsksMap *ebpf.MapSpec `ebpf:"xsks_map"`
+	IngressFilter *ebpf.MapSpec `ebpf:"ingress_filter"`
+	LocalArpTable *ebpf.MapSpec `ebpf:"local_arp_table"`
+	XsksMap       *ebpf.MapSpec `ebpf:"xsks_map"`
 }
 
 // xskObjects contains all objects after they have been loaded into the kernel.
@@ -82,11 +84,15 @@ func (o *xskObjects) Close() error {
 //
 // It can be passed to loadXskObjects or ebpf.CollectionSpec.LoadAndAssign.
 type xskMaps struct {
-	XsksMap *ebpf.Map `ebpf:"xsks_map"`
+	IngressFilter *ebpf.Map `ebpf:"ingress_filter"`
+	LocalArpTable *ebpf.Map `ebpf:"local_arp_table"`
+	XsksMap       *ebpf.Map `ebpf:"xsks_map"`
 }
 
 func (m *xskMaps) Close() error {
 	return _XskClose(
+		m.IngressFilter,
+		m.LocalArpTable,
 		m.XsksMap,
 	)
 }
