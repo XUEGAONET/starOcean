@@ -5,11 +5,14 @@ import (
 	"testing"
 )
 
-func TestHtons16(t *testing.T) {
-	r := Htons16(3)
+func TestSwap16(t *testing.T) {
+	r := Swap16(3)
 	fmt.Println(r)
+	fmt.Printf("%x\n", r)
 }
 
-func BenchmarkHtons16(b *testing.B) {
-	Htons16(3)
+func TestSwap32(t *testing.T) {
+	r := Swap32(0x12345678)
+	fmt.Println(r)
+	fmt.Printf("%x\n", r)
 }
