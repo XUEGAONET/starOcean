@@ -18,7 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"starOcean/layers"
-	"starOcean/pkg/ebpf_map"
 	"starOcean/utils/binary"
 	"starOcean/utils/checksum"
 	"starOcean/xsk"
@@ -84,12 +83,12 @@ func main() {
 		panic(err)
 	}
 
-	err = ebpf_map.PutLocalArpRecord(program.MapLocalArpTable, _localIP.String(), _localMAC.String())
+	err = program.RegisterLocalArp(_localIP, _localMAC)
 	if err != nil {
 		panic(err)
 	}
 
-	err = ebpf_map.PutIngressFilterRecord(program.MapIngressFilter, "tcp", 443)
+	err = program.RegisterIngressFilter(unix.IPPROTO_TCP, 443)
 	if err != nil {
 		panic(err)
 	}
@@ -109,7 +108,7 @@ func main() {
 		panic(err)
 	}
 
-	err = program.MapSockets.Put(uint32(*queueID), uint32(socket.FD()))
+	err = program.RegisterFD(*queueID, socket.FD())
 	if err != nil {
 		panic(err)
 	}
