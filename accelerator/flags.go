@@ -1,4 +1,4 @@
-package xsk
+package accelerator
 
 // DefaultSocketFlags are the flags which are passed to bind(2) system call
 // when the XDP socket is bound, possible values include unix.XDP_SHARED_UMEM,
@@ -9,4 +9,4 @@ var DefaultSocketFlags uint16 = 0
 // attached to the network link, possible values include
 // unix.XDP_FLAGS_DRV_MODE, unix.XDP_FLAGS_HW_MODE, unix.XDP_FLAGS_SKB_MODE,
 // unix.XDP_FLAGS_UPDATE_IF_NOEXIST.
-var DefaultXdpFlags uint32 = 0
+// var DefaultXdpFlags uint32 = 0

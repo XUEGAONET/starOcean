@@ -1,7 +1,6 @@
-package xsk
+package accelerator
 
 import (
-	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,8 +34,6 @@ type Socket struct {
 	fillDescs     []Desc
 	completeDescs []Desc
 
-	xsksMap *ebpf.Map
-	program *ebpf.Program
 	ifindex int
 	options SocketOptions
 
@@ -59,9 +56,6 @@ type SocketOptions struct {
 	NumCompletionRingDesc int
 	NumRxRingDesc         int
 	NumTxRingDesc         int
-
-	UseHugePage bool
-	HugePage1Gb bool
 }
 
 // Desc represents an XDP Rx/Tx descriptor.

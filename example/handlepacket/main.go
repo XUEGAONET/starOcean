@@ -17,10 +17,10 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"starOcean/accelerator"
 	"starOcean/layers"
 	"starOcean/utils/binary"
 	"starOcean/utils/checksum"
-	"starOcean/xsk"
 )
 
 var (
@@ -67,7 +67,7 @@ func main() {
 
 	// 单核情况下，使用该flag可以屏蔽一部分hwirq
 	// 从原理上来说，有助于提高性能
-	xsk.DefaultSocketFlags = unix.XDP_USE_NEED_WAKEUP
+	accelerator.DefaultSocketFlags = unix.XDP_USE_NEED_WAKEUP
 
 	link, err := netlink.LinkByName(*interfaceName)
 	if err != nil {
@@ -75,7 +75,7 @@ func main() {
 	}
 
 	// 添加eBPF程序到网卡
-	program, err := xsk.NewProgram()
+	program, err := accelerator.NewProgram()
 	if err != nil {
 		panic(err)
 	}
@@ -93,7 +93,7 @@ func main() {
 		panic(err)
 	}
 
-	opt := xsk.SocketOptions{
+	opt := accelerator.SocketOptions{
 		NumFrame:              4096,
 		SizeFrame:             2048,
 		NumFillRingDesc:       2048,
@@ -103,7 +103,7 @@ func main() {
 		UseHugePage:           *hugePage,
 		HugePage1Gb:           *gbPage,
 	}
-	socket, err := xsk.NewSocket(link.Attrs().Index, *queueID, &opt)
+	socket, err := accelerator.NewSocket(link.Attrs().Index, *queueID, &opt)
 	if err != nil {
 		panic(err)
 	}
@@ -156,8 +156,8 @@ func main() {
 
 	log.SetOutput(os.Stdout)
 
-	var txDesc *xsk.Desc
-	txDescs := make([]xsk.Desc, 0, opt.NumFrame)
+	var txDesc *accelerator.Desc
+	txDescs := make([]accelerator.Desc, 0, opt.NumFrame)
 	for {
 		socket.Fill(socket.GetFreeFillDescs(socket.NumFreeFillSlots()))
 
@@ -177,7 +177,7 @@ func main() {
 					txDesc = replyARPRequest(socket, &rxDescs[i])
 				}
 				if txDesc != nil {
-					socket.Transmit([]xsk.Desc{*txDesc})
+					socket.Transmit([]accelerator.Desc{*txDesc})
 				}
 			}
 		} else {
@@ -198,12 +198,12 @@ func main() {
 	}
 }
 
-func getEthernetType(socket *xsk.Socket, desc *xsk.Desc) uint16 {
+func getEthernetType(socket *accelerator.Socket, desc *accelerator.Desc) uint16 {
 	frame := socket.GetFrame(*desc)
 	return binary.Swap16((*(*layers.Ethernet)(&frame)).GetEthernetType())
 }
 
-func replyARPRequest(socket *xsk.Socket, rxDesc *xsk.Desc) *xsk.Desc {
+func replyARPRequest(socket *accelerator.Socket, rxDesc *accelerator.Desc) *accelerator.Desc {
 	rxFrame := socket.GetFrame(*rxDesc)
 
 	if rxDesc.Len < layers.LengthEthernet+layers.LengthARP+6+4+6+4 {
@@ -211,7 +211,7 @@ func replyARPRequest(socket *xsk.Socket, rxDesc *xsk.Desc) *xsk.Desc {
 		return nil
 	}
 
-	var txDesc xsk.Desc
+	var txDesc accelerator.Desc
 	for {
 		txDescs := socket.GetFreeTransmitDescs(1)
 		if len(txDescs) == 1 {
@@ -255,7 +255,7 @@ func replyARPRequest(socket *xsk.Socket, rxDesc *xsk.Desc) *xsk.Desc {
 	return &txDesc
 }
 
-func genGratuitousARP(socket *xsk.Socket, desc *xsk.Desc) {
+func genGratuitousARP(socket *accelerator.Socket, desc *accelerator.Desc) {
 	frame := socket.GetFrame(*desc)
 
 	eth := *(*layers.Ethernet)(&frame)
@@ -293,7 +293,7 @@ func genGratuitousARP(socket *xsk.Socket, desc *xsk.Desc) {
 	desc.Len = uint32(layers.LengthEthernet + index)
 }
 
-func replyICMPv4(socket *xsk.Socket, rxDesc *xsk.Desc) *xsk.Desc {
+func replyICMPv4(socket *accelerator.Socket, rxDesc *accelerator.Desc) *accelerator.Desc {
 	rxFrame := socket.GetFrame(*rxDesc)
 
 	eth := *(*layers.Ethernet)(&rxFrame)

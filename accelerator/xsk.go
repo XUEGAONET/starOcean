@@ -3,8 +3,10 @@
 // Use of this source code is governed by a BSD-style license
 // that can be found in the LICENSE file in the root of the source
 // tree.
+//
+// ↑ 原版代码性能挺拉胯的，但是遵守规则，还是留着许可证吧
 
-package xsk
+package accelerator
 
 import (
 	"fmt"
@@ -13,12 +15,11 @@ import (
 	"unsafe"
 
 	"github.com/pkg/errors"
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
 // NewSocket 将会创建新的AF_XDP套接字。
-// 请在载入eBPF程序后使用。
 func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, err error) {
 	if options == nil {
 		return nil, fmt.Errorf("SocketOptions is a nil pointer")
@@ -35,16 +36,8 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		return nil, errors.Wrap(err, "syscall.Socket create xdp fd failed")
 	}
 
-	flag := syscall.MAP_PRIVATE | syscall.MAP_ANONYMOUS | syscall.MAP_POPULATE
-	if options.UseHugePage {
-		flag |= unix.MAP_HUGETLB
-		if options.HugePage1Gb {
-			flag |= 30 << unix.MAP_HUGE_SHIFT
-		}
-	}
-
+	flag := syscall.MAP_PRIVATE | syscall.MAP_ANONYMOUS | syscall.MAP_POPULATE | unix.MAP_HUGETLB
 	memBufSize := options.NumFrame*options.SizeFrame + 4*options.NumFrame*int(unsafe.Sizeof(Desc{}))
-	log.Infof("allocate %dkb by using mmap", memBufSize)
 
 	memBuf, err := syscall.Mmap(-1, 0, memBufSize,
 		syscall.PROT_READ|syscall.PROT_WRITE, flag)
@@ -52,6 +45,8 @@ func NewSocket(Ifindex int, QueueID int, options *SocketOptions) (xsk *Socket, e
 		xsk.Close()
 		return nil, errors.Wrap(err, "syscall.Mmap umem failed")
 	}
+
+	logrus.WithField("module", "xsk").Infof("Used hugepage size: %dKB", memBufSize/1024)
 
 	xsk.umem = memBuf[:options.NumFrame*options.SizeFrame]
 
@@ -278,7 +273,7 @@ SEND:
 		case unix.EBUSY: // completed but not sent
 			return
 		default:
-			log.Errorf("sendto failed with rc=%d and errno=%d", rc, errno)
+			logrus.WithField("module", "xsk").Errorf("sendto failed with rc=%d and errno=%d", rc, errno)
 			return
 		}
 	}
@@ -441,7 +436,7 @@ func (xsk *Socket) Complete(n int) {
 	xsk.countCompleted += uint64(n)
 }
 
-// 获取FillRing中的空位置数量
+// NumFreeFillSlots 获取FillRing中的空位置数量
 func (xsk *Socket) NumFreeFillSlots() int {
 	prod := *xsk.fillRing.Producer
 	cons := *xsk.fillRing.Consumer
@@ -455,7 +450,7 @@ func (xsk *Socket) NumFreeFillSlots() int {
 	return int(n)
 }
 
-// 获取TxRing中的空位置数量
+// NumFreeTxSlots 获取TxRing中的空位置数量
 func (xsk *Socket) NumFreeTxSlots() int {
 	prod := *xsk.txRing.Producer
 	cons := *xsk.txRing.Consumer
@@ -469,7 +464,7 @@ func (xsk *Socket) NumFreeTxSlots() int {
 	return int(n)
 }
 
-// 获取RxRing中的元素数量，注意不是空位置。
+// NumReceived 获取RxRing中的元素数量，注意不是空位置。
 func (xsk *Socket) NumReceived() int {
 	prod := *xsk.rxRing.Producer
 	cons := *xsk.rxRing.Consumer
@@ -483,7 +478,7 @@ func (xsk *Socket) NumReceived() int {
 	return int(n)
 }
 
-// 获取CompleteRing中的元素数量，注意不是空位置。
+// NumCompleted 获取CompleteRing中的元素数量，注意不是空位置。
 func (xsk *Socket) NumCompleted() int {
 	prod := *xsk.completionRing.Producer
 	cons := *xsk.completionRing.Consumer
